@@ -216,6 +216,47 @@ void GCS_MAVLINK_Copter::send_position_target_local_ned()
 #endif
 }
 
+#if AC_COPTER_MODEGUIDED_ORBIT_ENABLED
+void GCS_MAVLINK_Copter::send_orbit_execution_status()
+{
+    // Nur senden wenn wir tatsächlich im Orbit-SubMode sind
+    if (copter.flightmode->mode_number() != Mode::Number::GUIDED) {
+        return;
+    }
+    ModeGuided* guided = (ModeGuided*)copter.flightmode;
+    if (guided->submode() != ModeGuided::SubMode::Orbit) {
+        return;
+    }
+
+    // Orbit-Mittelpunkt aus dem Circle-Controller holen
+    const AC_Circle* circle = copter.circle_nav;
+    if (circle == nullptr) {
+        return;
+    }
+
+    // Mittelpunkt als NED-Vektor (Meter vom EKF-Origin)
+    // In globale Koordinaten (Location) umrechnen
+    Location center;
+    if (!AP::ahrs().get_location_from_origin_offset_NED(center, circle->get_center_NED_m())) {
+        return;
+    }
+    // convert altitude to relative-to-home for MAV_FRAME_GLOBAL_RELATIVE_ALT
+    if (!center.change_alt_frame(Location::AltFrame::ABOVE_HOME)) {
+        return;
+    }
+
+    mavlink_msg_orbit_execution_status_send(
+        chan,
+        AP_HAL::micros64(),             // time_utc: Timestamp in Mikrosekunden
+        circle->get_radius_m(),           // radius: positiv=CW, negativ=CCW (Meter)
+        MAV_FRAME_GLOBAL_RELATIVE_ALT,  // frame: relativ zu Home-Altitude
+        center.lat,                     // x: Latitude in degE7
+        center.lng,                     // y: Longitude in degE7
+        center.alt * 0.01f              // z: Altitude in Metern (ArduPilot: cm → m)
+    );
+}
+#endif  // AC_COPTER_MODEGUIDED_ORBIT_ENABLED
+
 void GCS_MAVLINK_Copter::send_nav_controller_output() const
 {
     if (!copter.ap.initialised) {
@@ -339,6 +380,13 @@ bool GCS_MAVLINK_Copter::try_send_message(enum ap_message id)
         CHECK_PAYLOAD_SIZE(WIND);
         send_wind();
         break;
+#if AC_COPTER_MODEGUIDED_ORBIT_ENABLED
+    case MSG_ORBIT_EXECUTION_STATUS:
+        CHECK_PAYLOAD_SIZE(ORBIT_EXECUTION_STATUS);
+        send_orbit_execution_status();
+        break;
+#endif  // AC_COPTER_MODEGUIDED_ORBIT_ENABLED
+        break;    
 
     case MSG_ADSB_VEHICLE: {
 #if HAL_ADSB_ENABLED
@@ -923,7 +971,7 @@ MAV_RESULT GCS_MAVLINK_Copter::handle_MAV_CMD_DO_ORBIT(const mavlink_command_int
     const float turns = update_turns ? fabsf(packet.param4) : 0.0f;
     // param3: yaw behaviour (ORBIT_YAW_BEHAVIOUR enum), NaN or 0 = face center
     const ORBIT_YAW_BEHAVIOUR yaw_behaviour = (isnan(packet.param3) || packet.param3 < 0) ? ORBIT_YAW_BEHAVIOUR_HOLD_FRONT_TO_CIRCLE_CENTER : (ORBIT_YAW_BEHAVIOUR)(int)packet.param3;
-    copter.mode_guided.circle_start(circle_center, radius_m, ccw, speed_ms, update_turns, turns, yaw_behaviour);
+    copter.mode_guided.orbit_start(circle_center, radius_m, ccw, speed_ms, update_turns, turns, yaw_behaviour);
 
     return MAV_RESULT_ACCEPTED;
 }
